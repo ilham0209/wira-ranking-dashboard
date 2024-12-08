@@ -26,9 +26,10 @@ func getRankings(w http.ResponseWriter, r *http.Request) {
 	page := r.URL.Query().Get("page")
 
 	if limit == "" {
-		limit = "50" 
+		limit = "50"
+	}
 	if page == "" {
-		page = "1" 
+		page = "1"
 	}
 
 	limitInt, err := strconv.Atoi(limit)
@@ -81,38 +82,66 @@ func addPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Connect to the database
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal("Unable to connect to database:", err)
+		http.Error(w, "Unable to connect to the database", http.StatusInternalServerError)
+		return
 	}
 	defer db.Close()
 
-	query := `INSERT INTO Account (username, email) VALUES ($1, $2) RETURNING acc_id`
+	// Start a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback() // Ensure rollback on failure
+
+	// Insert into Account table
 	var accID int
-	err = db.QueryRow(query, player.Username, player.Email).Scan(&accID)
+	query := `INSERT INTO Account (username, email) VALUES ($1, $2) RETURNING acc_id`
+	err = tx.QueryRow(query, player.Username, player.Email).Scan(&accID)
 	if err != nil {
-		log.Fatal("Failed to insert into Account table:", err)
+		http.Error(w, "Failed to insert into Account table", http.StatusInternalServerError)
+		return
 	}
 
-	_, err = db.Exec(`INSERT INTO Character (acc_id, class_id) VALUES ($1, $2)`, accID, player.ClassID)
+	// Insert into Character table
+	_, err = tx.Exec(`INSERT INTO Character (acc_id, class_id) VALUES ($1, $2)`, accID, player.ClassID)
 	if err != nil {
-		log.Fatal("Failed to insert into Character table:", err)
+		http.Error(w, "Failed to insert into Character table", http.StatusInternalServerError)
+		return
 	}
 
-	_, err = db.Exec(`INSERT INTO Scores (char_id, reward_score) VALUES ($1, $2)`, accID, player.Score)
+	// Insert into Scores table
+	_, err = tx.Exec(`INSERT INTO Scores (char_id, reward_score) VALUES ($1, $2)`, accID, player.Score)
 	if err != nil {
-		log.Fatal("Failed to insert into Scores table:", err)
+		http.Error(w, "Failed to insert into Scores table", http.StatusInternalServerError)
+		return
 	}
 
+	// Commit the transaction
+	err = tx.Commit()
+	if err != nil {
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
+	}
+
+	// Send a success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(player)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":  "Player added successfully",
+		"username": player.Username,
+		"email":    player.Email,
+	})
 }
 
 func main() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/rankings", getRankings) 
-	mux.HandleFunc("/api/add-player", addPlayer) 
+	mux.HandleFunc("/api/rankings", getRankings)
+	mux.HandleFunc("/api/add-player", addPlayer)
 
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{"http://localhost:8081"},
